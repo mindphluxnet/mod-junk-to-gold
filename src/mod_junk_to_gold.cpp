@@ -1,48 +1,49 @@
 #include "Chat.h"
+#include "Item.h"
+#include "j2g_conf.h"
+#include "ObjectGuid.h"
 #include "Player.h"
 #include "ScriptMgr.h"
-#include "j2g_conf.h"
-#include "Item.h"
 #include "SharedDefines.h"
-#include <vector>
+//#include "Log.h"
+#include <algorithm>
 #include <cmath>
-#include "ObjectGuid.h"
+#include <vector>
 
 // Detect module playerbots
 #if defined(__has_include)
-#  if __has_include("playerbot/playerbot.h")
-#    include "playerbot/playerbot.h"
+#  if __has_include("Script/Playerbots.h")
+#    include "Script/Playerbots.h"
 #    define J2G_HAVE_PLAYERBOTS 1
-#  elif __has_include("playerbot/PlayerbotAI.h")
-#    include "playerbot/PlayerbotAI.h"
+#  elif __has_include("Bot/PlayerbotMgr.h") && __has_include("Bot/PlayerbotAI.h")
+#    include "Bot/PlayerbotMgr.h"
+#    include "Bot/PlayerbotAI.h"
 #    define J2G_HAVE_PLAYERBOTS 1
 #  endif
 #endif
 
-// Helper : determine if player or Bot
 static inline bool J2G_IsBot(Player* p)
 {
 #ifdef J2G_HAVE_PLAYERBOTS
-    return p && p->IsPlayerbot();
+    return p && sPlayerbotsMgr.GetPlayerbotAI(p);
 #else
     return false;
 #endif
 }
 
-// --- Helpers to compare a white-quality loot item with the current equipment (armor & weapons) ---
-static inline int CompareItemTemplates(ItemTemplate const* a, ItemTemplate const* b)
+static inline WorldSession* J2G_GetMasterSession(Player* player)
 {
-    // >0: a is better; 0: equal; <0: a is worse
-    if (!a && !b) return 0;
-    if (!a) return -1;
-    if (!b) return 1;
-    if (a->Quality != b->Quality)
-        return int(a->Quality) - int(b->Quality);
-    if (a->ItemLevel != b->ItemLevel)
-        return int(a->ItemLevel) - int(b->ItemLevel);
-    if (a->RequiredLevel != b->RequiredLevel)
-        return int(a->RequiredLevel) - int(b->RequiredLevel);
-    return 0;
+    if (!player)
+        return nullptr;
+
+#ifdef J2G_HAVE_PLAYERBOTS
+    if (PlayerbotAI* ai = sPlayerbotsMgr.GetPlayerbotAI(player))
+        if (Player* master = ai->GetMaster())
+            if (WorldSession* masterSession = master->GetSession())
+                return masterSession;
+#endif
+
+    return player->GetSession();
 }
 
 static inline bool IsWeaponInvType(uint32 invType)
@@ -85,6 +86,24 @@ static inline double ComputeWeaponDPS(ItemTemplate const* proto)
     return (avg * 1000.0) / double(proto->Delay); // dmg per second
 }
 
+static inline bool CanPlayerUseItemTemplate(Player* player, ItemTemplate const* proto)
+{
+    if (!player || !proto)
+        return false;
+
+    // Minimal "can use" check (class/skill/restrictions). Core-friendly.
+    return player->CanUseItem(proto) == EQUIP_ERR_OK;
+}
+
+static inline bool IsDpsClose(double a, double b)
+{
+    // Aggressive: tiny tolerance, so we sell more often when DPS is even slightly lower.
+    // Threshold: max(0.01 DPS, 0.2% relative)
+    double absTol = 0.01;
+    double relTol = 0.002 * std::max(std::fabs(a), std::fabs(b));
+    return std::fabs(a - b) <= std::max(absTol, relTol);
+}
+
 static inline int CompareForEquipDecision(ItemTemplate const* a, ItemTemplate const* b, bool weaponPreferredDPS)
 {
     if (!a && !b) return 0;
@@ -95,8 +114,12 @@ static inline int CompareForEquipDecision(ItemTemplate const* a, ItemTemplate co
     if (weaponPreferredDPS)
     {
         double dpsA = ComputeWeaponDPS(a), dpsB = ComputeWeaponDPS(b);
-        if (std::fabs(dpsA - dpsB) > 1e-6)
+        if (!IsDpsClose(dpsA, dpsB))
+        {
+            // Aggressive: if DPS is lower, treat it as worse without extra safeguards.
             return dpsA > dpsB ? 1 : -1;
+        }
+        // DPS close enough: fall back to ilvl/reqlevel
     }
     if (a->ItemLevel != b->ItemLevel)
         return int(a->ItemLevel) - int(b->ItemLevel);
@@ -153,6 +176,10 @@ static bool IsWhiteItemWorseThanEquipped(Player* player, ItemTemplate const* pro
     if (slots.empty())
         return false; // non-equippable (not relevant)
 
+    // Aggressive: if the player cannot use the item, it can never be an upgrade -> auto-sell.
+    if (!CanPlayerUseItemTemplate(player, proto))
+        return true;
+
     // If any candidate slot is empty OR the loot is >= an equipped item -> don't sell (possible upgrade)
     bool strictlyWorse = false;
     for (uint8 slot : slots)
@@ -179,17 +206,17 @@ public:
         if (!J2G::IsEnabled())
             return; // // module off: do nothing
 
-        // If selling for humans is disabled, only process bots
-        if (!J2G::EnableForHumans())
-        {
-#ifdef J2G_HAVE_PLAYERBOTS
-            if (!J2G_IsBot(player))
-                return; // skip humans, keep bot loot handling
-#else
-            // Playerbots headers not found: treat everyone as human -> skip
-            return;
-#endif
-        }
+        /*LOG_INFO("module",
+                 "mod-junk-to-gold: OnPlayerLootItem player={} guid={} isBot={} itemEntry={} count={}",
+                 player ? player->GetName() : "<null>",
+                 player ? player->GetGUID().ToString() : "<null>",
+                 J2G_IsBot(player),
+                 item ? item->GetEntry() : 0,
+                 count);*/
+
+        // If selling for humans is disabled, only process bots (when playerbots are available)
+        if (!J2G::EnableForHumans() && !J2G_IsBot(player))
+            return; // skip humans, keep bot loot handling
 
         if (!item)
             return;
@@ -216,13 +243,39 @@ public:
 
         // Sale: info message + gold conversion + removal (once only)
         SendTransactionInformation(player, item, count);
-        player->ModifyMoney(proto->SellPrice * count);
-        player->DestroyItem(item->GetBagSlot(), item->GetSlot(), true);
+        /*LOG_INFO("module",
+                 "mod-junk-to-gold: Sold item player={} entry={} count={} sellPrice={}",
+                 player ? player->GetName() : "<null>",
+                 item->GetEntry(),
+                 count,
+                 proto->SellPrice);*/
+        player->ModifyMoney(int64(uint64(proto->SellPrice) * uint64(count)));
+        //player->DestroyItem(item->GetBagSlot(), item->GetSlot(), true);
+
+        // If the loot stacked into an existing slot, 'item' can represent a stack larger than 'count'.
+        // DestroyItem(bag, slot) would delete the whole stack -> item loss.
+        uint32 stackCount = item->GetCount();
+        if (stackCount > count)
+        {
+            // Remove only the looted amount from the existing stack.
+            item->SetCount(stackCount - count);
+            item->SetState(ITEM_CHANGED, player);
+
+            // Keep quest/item removal checks consistent with normal removals.
+            player->ItemRemovedQuestCheck(item->GetEntry(), count);
+        }
+        else
+        {
+            // Full stack (or exact amount) -> remove the slot as before.
+            player->DestroyItem(item->GetBagSlot(), item->GetSlot(), true);
+        }
     }
 
 private:
     void SendTransactionInformation(Player* player, Item* item, uint32 count)
     {
+        std::string seller = player ? player->GetName() : "<unknown>";
+
         std::string name;
         // Color based on quality (0=grey, 1=white)
         const char* qColor = "|cff9d9d9d"; // poor
@@ -243,48 +296,55 @@ private:
                                        qColor, item->GetTemplate()->ItemId, item->GetTemplate()->Name1);
         }
 
-        uint32 money = item->GetTemplate()->SellPrice * count;
-        uint32 gold = money / GOLD;
-        uint32 silver = (money % GOLD) / SILVER;
-        uint32 copper = (money % GOLD) % SILVER;
+        uint64 money = uint64(item->GetTemplate()->SellPrice) * uint64(count);
+        uint64 gold = money / GOLD;
+        uint64 silver = (money % GOLD) / SILVER;
+        uint64 copper = (money % GOLD) % SILVER;
 
         std::string info;
         if (money < SILVER)
         {
-            info = Acore::StringFormat("{} sold for {} copper.", name, copper);
+            info = Acore::StringFormat("{}: {} sold for {} copper.", seller, name, copper);
         }
         else if (money < GOLD)
         {
             if (copper > 0)
             {
-                info = Acore::StringFormat("{} sold for {} silver and {} copper.", name, silver, copper);
+                info = Acore::StringFormat("{}: {} sold for {} silver and {} copper.", seller, name, silver, copper);
             }
             else
             {
-                info = Acore::StringFormat("{} sold for {} silver.", name, silver);
+                info = Acore::StringFormat("{}: {} sold for {} silver.", seller, name, silver);
             }
         }
         else
         {
             if (copper > 0 && silver > 0)
             {
-                info = Acore::StringFormat("{} sold for {} gold, {} silver and {} copper.", name, gold, silver, copper);
+                info = Acore::StringFormat("{}: {} sold for {} gold, {} silver and {} copper.", seller, name, gold, silver, copper);
             }
             else if (copper > 0)
             {
-                info = Acore::StringFormat("{} sold for {} gold and {} copper.", name, gold, copper);
+                info = Acore::StringFormat("{}: {} sold for {} gold and {} copper.", seller, name, gold, copper);
             }
             else if (silver > 0)
             {
-                info = Acore::StringFormat("{} sold for {} gold and {} silver.", name, gold, silver);
+                info = Acore::StringFormat("{}: {} sold for {} gold and {} silver.", seller, name, gold, silver);
             }
             else
             {
-                info = Acore::StringFormat("{} sold for {} gold.", name, gold);
+                info = Acore::StringFormat("{}: {} sold for {} gold.", seller, name, gold);
             }
         }
 
-        ChatHandler(player->GetSession()).SendSysMessage(info);
+        WorldSession* session = J2G_GetMasterSession(player);
+        /*LOG_INFO("module",
+                 "mod-junk-to-gold: SendTransactionInformation player={} isBot={} session={} info={}",
+                 player ? player->GetName() : "<null>",
+                 J2G_IsBot(player),
+                 session ? session->GetPlayerName() : "<null>",
+                 info);*/
+        ChatHandler(session).SendSysMessage(info);
     }
 };
 
