@@ -27,3 +27,8 @@ JunkToGold.SellWeaponsIfWorse = 0
 # Enable/disable selling for human-controlled players
 # 1 = enabled (default), 0 = disabled (sell for bots only if you use Playerbots)
 JunkToGold.EnableForHumans = 1
+
+# Never sell blacklisted items
+# Comma-separated list (no spaces)
+# Default contains a list of shoulder items and Noboru's Cudgel (quest starter)
+JunkToGold.Blacklist = 1793,1769,1744,1752,1777,1801,1809,1760,1785,6196

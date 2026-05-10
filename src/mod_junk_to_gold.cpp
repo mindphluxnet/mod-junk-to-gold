@@ -220,6 +220,11 @@ public:
 
         if (!item)
             return;
+
+        // Check if item is blacklisted
+        if (J2G::IsBlacklisted(item->GetEntry()))
+            return; // skip blacklisted items
+
         ItemTemplate const* proto = item->GetTemplate();
         if (!proto)
             return;

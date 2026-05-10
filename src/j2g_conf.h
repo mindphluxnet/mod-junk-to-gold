@@ -13,6 +13,9 @@ namespace J2G
 
     bool SellWeaponsIfWorse();
 
+    // Check if an item ID is blacklisted
+    bool IsBlacklisted(uint32 itemId);
+
     void LoadConfig();
 
     class World final : public WorldScript
