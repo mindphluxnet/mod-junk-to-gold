@@ -1,30 +1,43 @@
 # Junk to Gold
-This module will automatically sell gray items when the player loots them
 
-# Difs between the original mod:
+Automatically sell gray and optionally white items when players loot them. Includes configurable smart auto-sell, human player detection, and blacklist support.
 
-Add Config file + smarter auto-sell + Human player detection
+## Features
 
-# Summary :
+- **Gray item auto-sell**: Automatically vendored on loot
+- **Smart white item selling**: Optional DPS-aware comparison for weapons and quality comparison for other items
+- **Human player detection**: Configure selling behavior for human-controlled vs bot players
+- **Item blacklist**: Prevent specific items from being sold (e.g., quest items, shoulders)
+- **Backwards compatible**: Defaults maintain original behavior (gray items only)
 
-New config file (conf/mod_junk_to_gold.conf.dist) with runtime reload.
+## Configuration
 
-Enable/disable switch: JunkToGold.Enable (1 on / 0 off).
+Create or edit `conf/mod_junk_to_gold.conf` in your WorldServer config directory:
 
-White items auto-sell (opt-in): JunkToGold.SellCommonIfWorse=1 => sell if strictly worse than equipped.
-
-White weapons auto-sell (opt-in): JunkToGold.SellWeaponsIfWorse=1 => DPS-aware, sell if strictly worse.
-
-Sell only for bots or Human and bots: JunkToGold.EnableForHumans= 1 => Selling for booth
-
-Backwards compatible: defaults keep current behavior (sell greys only).
-
-Config (example):
-
+```ini
 [worldserver]
+# Enable/disable the module
+# 0 = disabled, 1 = enabled (default: 1)
 JunkToGold.Enable = 1
+
+# Print startup announcement
+# 0 = disabled, 1 = enabled (default: 1)
 JunkToGold.Announce = 1
+
+# Sell white-quality items if strictly worse than equipped
+# 0 = disabled (default), 1 = enabled
 JunkToGold.SellCommonIfWorse = 0
+
+# Sell white-quality weapons if strictly worse than equipped (DPS-aware)
+# Warning: keeps weapon if any slot is empty or has equivalent item
+# 0 = disabled (default), 1 = enabled
 JunkToGold.SellWeaponsIfWorse = 0
+
+# Enable selling for human-controlled players
+# 1 = sell for humans and bots (default), 0 = sell for bots only
 JunkToGold.EnableForHumans = 1
 
+# Blacklist: comma-separated list of item IDs to never sell (no spaces)
+# Example: quest items, shoulders, valuable grays
+JunkToGold.Blacklist = 1793,1769,1744,1752,1777,1801,1809,1760,1785,6196
+```
